@@ -10,7 +10,8 @@ import {
   SERVICE_MAGIC,
   SERVICE_VERSION,
   ServiceSignature,
-  ServiceActionType
+  ServiceActionType,
+  HANDSHAKE_RESPONSE
 } from "../constants.ts";
 import "../setup_log.ts";
 
@@ -68,7 +69,7 @@ log.info("connecting %s", args.endpoint);
 const sock = await ws.connectWebSocket(args.endpoint);
 log.info("connected, sending handshake");
 await sock.send(buildHandshake(args.name));
-log.info("starting receive");
+log.info("waiting handshake response");
 
 let done = false;
 
@@ -79,7 +80,20 @@ let done = false;
   } while (!done);
 })();
 
-for await (const pkt of sock.receive()) {
+const rec = sock.receive();
+
+const resp = await rec.next();
+if (
+  !(resp.value instanceof Uint8Array) ||
+  new MsgPackDecoder(resp.value).expectedString() !== HANDSHAKE_RESPONSE
+) {
+  log.error("failed to handshake");
+  Deno.exit(1);
+}
+
+log.info("starting receive");
+
+for await (const pkt of rec) {
   log.debug("packet: %v", pkt);
   if (ws.isWebSocketCloseEvent(pkt)) break;
   if (ws.isWebSocketPingEvent(pkt) || ws.isWebSocketPongEvent(pkt)) continue;

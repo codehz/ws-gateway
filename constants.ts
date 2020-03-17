@@ -1,3 +1,5 @@
+export const HANDSHAKE_RESPONSE = "WS-GATEWAY OK";
+
 export const SERVICE_MAGIC = "WS-GATEWAY";
 export const GATEWAY_MAGIC = "WS-GATEWAY-CLIENT";
 
@@ -16,7 +18,8 @@ export enum GatewayActionType {
 }
 export enum ServiceActionType {
   Response,
-  Broadcast
+  Broadcast,
+  Exception = -1
 }
 
 export enum ServiceSignature {
@@ -29,7 +32,8 @@ export enum ClientSignature {
   Broadcast,
   Wait,
   CancelRequest,
-  CancelSubscribe
+  CancelSubscribe,
+  Exception = -1
 }
 
 export const WaitResult = {

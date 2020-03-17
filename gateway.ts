@@ -1,10 +1,17 @@
-import { http, ws, MsgPackDecoder, log } from "./deps.ts";
+import { http, ws, MsgPackDecoder, MsgPackEncoder, log } from "./deps.ts";
 import { ClientProxy } from "./bridge.ts";
 import {
   GATEWAY_MAGIC,
   GATEWAY_VERSION,
+  HANDSHAKE_RESPONSE,
   GatewayActionType as ActionType
 } from "./constants.ts";
+
+const RESP = (() => {
+  const enc = new MsgPackEncoder();
+  enc.putString(HANDSHAKE_RESPONSE);
+  return enc.dump();
+})();
 
 async function* handleSession(
   sock: ws.WebSocket,
@@ -23,6 +30,7 @@ async function* handleSession(
   }
   const client = ClientProxy.register(sock);
   reg.push(() => client.unregister());
+  await sock.send(RESP);
   while (true) {
     const frame = yield;
     switch (frame.expectedInteger() as ActionType) {

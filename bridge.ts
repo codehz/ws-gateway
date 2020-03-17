@@ -149,7 +149,22 @@ export class ServiceProxy {
     id: number,
     data: Uint8Array
   ) {
-    return this.pending_call.get(id)?.method_response(this.name, id, data);
+    const cli = this.pending_call.get(id);
+    if (cli) {
+      this.pending_call.delete(id);
+      await cli.method_response(this.name, id, data);
+    }
+  }
+
+  async exception(
+    id: number,
+    data: Uint8Array
+  ) {
+    const cli = this.pending_call.get(id);
+    if (cli) {
+      this.pending_call.delete(id);
+      await cli.method_exception(this.name, id, data);
+    }
   }
 
   async broadcast(
@@ -310,6 +325,13 @@ export class ClientProxy {
   async method_response(name: string, id: number, data: Uint8Array) {
     const enc = new MsgPackEncoder();
     enc.putInt(ClientSignature.Response);
+    enc.putString(name);
+    enc.putInt(id);
+    await this.sock.send(enc.dump(data));
+  }
+  async method_exception(name: string, id: number, data: Uint8Array) {
+    const enc = new MsgPackEncoder();
+    enc.putInt(ClientSignature.Exception);
     enc.putString(name);
     enc.putInt(id);
     await this.sock.send(enc.dump(data));

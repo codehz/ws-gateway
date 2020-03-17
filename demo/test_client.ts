@@ -12,7 +12,8 @@ import {
   GATEWAY_VERSION,
   GatewayActionType,
   ClientSignature,
-  WaitResult
+  WaitResult,
+  HANDSHAKE_RESPONSE
 } from "../constants.ts";
 
 function assertEquals<T>(left: T, right: T, ex?: string) {
@@ -68,9 +69,16 @@ log.info("connecting %s", args.endpoint);
 const sock = await ws.connectWebSocket(args.endpoint);
 log.info("connected, sending handshake");
 await sock.send(buildHandshake());
-log.info("starting receive");
+log.info("waiting handshake response");
 
 async function* handler(): AsyncGenerator<undefined, void, MsgPackDecoder> {
+  const handshake_response = yield;
+  assertEquals(
+    handshake_response.expectedString(),
+    HANDSHAKE_RESPONSE,
+    "failed to handshake"
+  );
+  log.info("handshake ok");
   log.info("get service list");
   await sock.send(buildGetServiceList());
   const service_list = yield;
@@ -151,7 +159,11 @@ async function* handler(): AsyncGenerator<undefined, void, MsgPackDecoder> {
     switch (event.expectedInteger()) {
       case ClientSignature.Wait:
         assertEquals(event.expectedString(), args.name, "Invalid target");
-        assertEquals(event.expectedBool(), WaitResult.Offline, "Invalid state");
+        assertEquals(
+          event.expectedBool(),
+          WaitResult.Offline,
+          "Invalid state"
+        );
         return;
       case ClientSignature.CancelSubscribe:
         break;

@@ -1,12 +1,19 @@
-import { http, ws, MsgPackDecoder, log } from "./deps.ts";
+import { http, ws, MsgPackDecoder, MsgPackEncoder, log } from "./deps.ts";
 import {
   ServiceProxy
 } from "./bridge.ts";
 import {
   SERVICE_MAGIC,
   SERVICE_VERSION,
+  HANDSHAKE_RESPONSE,
   ServiceActionType as ActionType
 } from "./constants.ts";
+
+const RESP = (() => {
+  const enc = new MsgPackEncoder();
+  enc.putString(HANDSHAKE_RESPONSE);
+  return enc.dump();
+})();
 
 async function* handleSession(
   sock: ws.WebSocket,
@@ -28,6 +35,7 @@ async function* handleSession(
   const version = handshake.expectedString();
   const service = ServiceProxy.register(name, type, version, sock);
   reg.push(() => service.unregister());
+  await sock.send(RESP);
   while (true) {
     const frame = yield;
     switch (frame.expectedInteger() as ActionType) {
@@ -36,6 +44,9 @@ async function* handleSession(
         break;
       case ActionType.Broadcast:
         await service.broadcast(frame.expectedString(), frame.getRest());
+        break;
+      case ActionType.Exception:
+        await service.exception(frame.expectedInteger(), frame.getRest());
         break;
       default:
         await sock.send(`invalid op: ${type}`);
