@@ -1,8 +1,5 @@
 export default class MultiMap<Key, Value> {
-  private data: Map<Key, Set<Value>>;
-  constructor() {
-    this.data = new Map();
-  }
+  private data: Map<Key, Set<Value>> = new Map();
 
   has(key: Key, value?: Value) {
     if (value != undefined) {
@@ -18,7 +15,7 @@ export default class MultiMap<Key, Value> {
 
   add(key: Key, value: Value) {
     let temp = this.data.get(key);
-    if (!temp) {
+    if (temp == null) {
       temp = new Set();
       this.data.set(key, temp);
     } else if (temp.has(value)) {
