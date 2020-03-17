@@ -32,6 +32,9 @@ async function* handleSession(
       case ActionType.WaitService:
         await client.add_wait_list(frame.expectedString());
         break;
+      case ActionType.CancelWaitService:
+        await client.remove_from_wait_list(frame.expectedString());
+        break;
       case ActionType.CallService:
         await client.request_method(
           frame.expectedString(),
@@ -39,8 +42,20 @@ async function* handleSession(
           frame.getRest()
         );
         break;
+      case ActionType.CancelCallService:
+        await client.cancel_request(
+          frame.expectedString(),
+          frame.expectedInteger()
+        );
+        break;
       case ActionType.SubscribeService:
         await client.add_subscribe(
+          frame.expectedString(),
+          frame.expectedString()
+        );
+        break;
+      case ActionType.UnsubscribeService:
+        await client.unsubscribe(
           frame.expectedString(),
           frame.expectedString()
         );

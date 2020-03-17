@@ -8,7 +8,11 @@ export enum GatewayActionType {
   GetServiceList,
   WaitService,
   CallService,
-  SubscribeService
+  SubscribeService,
+
+  CancelWaitService = -1,
+  CancelCallService = -2,
+  UnsubscribeService = -3
 }
 export enum ServiceActionType {
   Response,

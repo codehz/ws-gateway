@@ -113,12 +113,19 @@ export class ServiceProxy {
     await this.sock.send(enc.dump(arg));
   }
 
-  async method_cancel(key: string, id: number) {
+  remove_from_pending_call(id: number, from: ClientProxy): boolean {
+    if (this.pending_call.get(id) === from) {
+      this.pending_call.delete(id);
+      return true;
+    }
+    return false;
+  }
+
+  async method_cancel(id: number) {
     const enc = new MsgPackEncoder();
     enc.putInt(ServiceSignature.CancelRequest);
-    enc.putString(key);
     enc.putInt(id);
-    this.sock.send(enc.dump());
+    await this.sock.send(enc.dump());
   }
 
   generate_id(): number {
@@ -134,8 +141,8 @@ export class ServiceProxy {
     return this.subscribers.add(key, client);
   }
 
-  unsubscribe_client(key: string, client: ClientProxy) {
-    this.subscribers.delete(key, client);
+  unsubscribe_client(key: string, client: ClientProxy): boolean {
+    return this.subscribers.delete(key, client);
   }
 
   async response(
@@ -182,7 +189,7 @@ export class ClientProxy {
       switch (link.type) {
         case LinkType.method:
           if (!service) return;
-          service.method_cancel(link.key, link.id).catch(() => {});
+          service.method_cancel(link.id).catch(() => {});
           break;
         case LinkType.subscribe:
           if (!service) return;
@@ -217,6 +224,23 @@ export class ClientProxy {
     }
     await this.sock.send(enc.dump());
   }
+  async remove_from_wait_list(name: string) {
+    const enc = new MsgPackEncoder();
+    enc.putInt(ClientSignature.Sync);
+    const result = wait_map.has(name, this);
+    enc.putBool(result);
+    if (result) {
+      wait_map.delete(name, this);
+      const set = client_trace.get(this)!;
+      for (const item of set) {
+        if (item.type === LinkType.wait && item.name === name) {
+          set.delete(item);
+          break;
+        }
+      }
+    }
+    await this.sock.send(enc.dump());
+  }
   async request_method(
     name: string,
     key: string,
@@ -236,6 +260,25 @@ export class ClientProxy {
     await this.sock.send(enc.dump());
     await service.method_call(key, id, arg, this);
   }
+  async cancel_request(
+    name: string,
+    id: number
+  ) {
+    const enc = new MsgPackEncoder();
+    enc.putInt(ClientSignature.Sync);
+    const service = service_map.get(name);
+    if (!service) {
+      enc.putBool(false);
+      await this.sock.send(enc.dump());
+      return;
+    }
+    enc.putBool(service.remove_from_pending_call(id, this));
+    try {
+      await this.sock.send(enc.dump());
+    } finally {
+      await service.method_cancel(id);
+    }
+  }
   async add_subscribe(name: string, key: string) {
     const enc = new MsgPackEncoder();
     enc.putInt(ClientSignature.Sync);
@@ -249,6 +292,18 @@ export class ClientProxy {
     if (service.subscribe_client(key, this)) {
       client_trace.add(this, { type: LinkType.subscribe, name, key });
     }
+    await this.sock.send(enc.dump());
+  }
+  async unsubscribe(name: string, key: string) {
+    const enc = new MsgPackEncoder();
+    enc.putInt(ClientSignature.Sync);
+    const service = service_map.get(name);
+    if (!service) {
+      enc.putBool(false);
+      await this.sock.send(enc.dump());
+      return;
+    }
+    enc.putBool(service.unsubscribe_client(key, this));
     await this.sock.send(enc.dump());
   }
 

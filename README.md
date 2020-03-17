@@ -43,8 +43,7 @@ Messages are encoded as MessagePack
 (optional, can be ignored)
 
 1. `int 1` as CancelRequest
-2. `str (key)` as method key
-3. `int (id)` as request id
+2. `int (id)` as request id
 
 ### Client side
 
@@ -80,6 +79,16 @@ Messages are encoded as MessagePack
 2. `str (name)` as target service name
 3. `bool (online status)`
 
+**CancelWaitService packet**
+
+1. `int -1` as CancelWaitService
+2. `int (name)` as service name
+
+*sync response*
+
+1. `int 0` as Sync
+2. `bool (success)`
+
 **CallService packet**
 
 1. `int 2` as CallService
@@ -106,6 +115,17 @@ Messages are encoded as MessagePack
 2. `str (service name)`
 3. `int (request id)`
 
+**CancelCallService packet**
+
+1. `int -2` as CancelCallService
+2. `str (name)` as service name
+3. `int (request id)` as request id
+
+*sync response*
+
+1. `int 0` as Sync
+2. `bool (success)`
+
 **SubscribeService packet**
 
 1. `int 3` as SubscribeService
@@ -117,15 +137,26 @@ Messages are encoded as MessagePack
 1. `int 0` as Sync
 2. `bool (success)`
 
-**async response: success**
+*async response: success*
 
 1. `int 2` as Broadcast
 2. `str (name)` as service name
 3. `str (key)` as event key
 4. data
 
-**async response: cancel**
+*async response: cancel*
 
 1. `int 5` as CancelSubscribe
 2. `str (name)` as service name
 3. `str (key)` as event key
+
+**UnscribeService packet**
+
+1. `int -3` as UnsubscribeService
+2. `str (name)` as service name
+3. `str (key)` as event key
+
+*sync response*
+
+1. `int 0` as Sync
+2. `bool (success)`

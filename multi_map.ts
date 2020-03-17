@@ -28,14 +28,15 @@ export default class MultiMap<Key, Value> {
     return true;
   }
 
-  delete(key: Key, value?: Value) {
+  delete(key: Key, value?: Value): boolean {
     if (value != undefined) {
       const temp = this.data.get(key);
-      if (!temp) return;
-      temp.delete(value);
+      if (!temp) return false;
+      const ret = temp.delete(value);
       if (temp.size === 0) this.data.delete(key);
+      return ret;
     } else {
-      this.data.delete(key);
+      return this.data.delete(key);
     }
   }
 
