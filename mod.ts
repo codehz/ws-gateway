@@ -12,6 +12,6 @@ const args = flags.parse(Deno.args, {
 
 log.info("service: %s", args.service);
 log.info("gateway: %s", args.gateway);
-log.debug("result: %v", await Promise.allSettled(
+log.debug("result: %#v", await Promise.allSettled(
   [serveService(args.service), serveGateway(args.gateway)]
 ));

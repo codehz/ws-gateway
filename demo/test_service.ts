@@ -44,14 +44,14 @@ function buildTick() {
 
 async function processPacket(frame: MsgPackDecoder, sock: ws.WebSocket) {
   switch (frame.expectedInteger()) {
-    case ServiceSignature.Call: {
+    case ServiceSignature.Request: {
       const key = frame.expectedString();
       const id = frame.expectedInteger();
       log.info("call %s@%d", key, id);
       sock.send(buildEcho(key, id, frame.getRest())).catch(() => {});
       break;
     }
-    case ServiceSignature.CancelCall:
+    case ServiceSignature.CancelRequest:
       // ignore
       break;
   }

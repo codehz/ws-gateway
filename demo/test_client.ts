@@ -113,7 +113,7 @@ async function* handler(): AsyncGenerator<undefined, void, MsgPackDecoder> {
       "Unexpected wait name"
     );
     assertEquals(
-      async_result.expectedInteger(),
+      async_result.expectedBool(),
       WaitResult.Online,
       "Unexpected wait status"
     );
@@ -132,9 +132,10 @@ async function* handler(): AsyncGenerator<undefined, void, MsgPackDecoder> {
   const resp = yield;
   assertEquals(
     resp.expectedInteger(),
-    ClientSignature.Call,
+    ClientSignature.Response,
     "Unexpected sig"
   );
+  assertEquals(resp.expectedString(), args.name, "Different service name");
   assertEquals(resp.expectedInteger(), id, "Different id");
   log.info("res: %s", resp.expectedString());
   await sock.send(buildSubscribe(args.name, "tick"));
@@ -150,9 +151,9 @@ async function* handler(): AsyncGenerator<undefined, void, MsgPackDecoder> {
     switch (event.expectedInteger()) {
       case ClientSignature.Wait:
         assertEquals(event.expectedString(), args.name, "Invalid target");
-        assertEquals(event.expectedInteger(), WaitResult.Offline, "Invalid state");
+        assertEquals(event.expectedBool(), WaitResult.Offline, "Invalid state");
         return;
-      case ClientSignature.CancelBroadcast:
+      case ClientSignature.CancelSubscribe:
         break;
       case ClientSignature.Broadcast:
         assertEquals(

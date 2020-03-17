@@ -16,19 +16,19 @@ export enum ServiceActionType {
 }
 
 export enum ServiceSignature {
-  Call,
-  CancelCall
+  Request,
+  CancelRequest
 }
 export enum ClientSignature {
   Sync,
-  Call,
+  Response,
   Broadcast,
   Wait,
-  CancelCall,
-  CancelBroadcast
+  CancelRequest,
+  CancelSubscribe
 }
 
-export enum WaitResult {
-  Online,
-  Offline
-}
+export const WaitResult = {
+  Online: true,
+  Offline: false
+};

@@ -80,7 +80,7 @@ export class ServiceProxy {
       if (trace.name === name) {
         switch (trace.type) {
           case LinkType.method:
-            client.method_cancel(name, trace.key, trace.id).catch(() => {});
+            client.method_cancel(name, trace.id).catch(() => {});
             break;
           case LinkType.subscribe:
             client.subscribe_cancel(name, trace.key).catch(() => {});
@@ -106,7 +106,7 @@ export class ServiceProxy {
     client: ClientProxy
   ) {
     const enc = new MsgPackEncoder();
-    enc.putInt(ServiceSignature.Call);
+    enc.putInt(ServiceSignature.Request);
     enc.putString(key);
     enc.putInt(id);
     this.pending_call.set(id, client);
@@ -115,7 +115,7 @@ export class ServiceProxy {
 
   async method_cancel(key: string, id: number) {
     const enc = new MsgPackEncoder();
-    enc.putInt(ServiceSignature.CancelCall);
+    enc.putInt(ServiceSignature.CancelRequest);
     enc.putString(key);
     enc.putInt(id);
     this.sock.send(enc.dump());
@@ -142,7 +142,7 @@ export class ServiceProxy {
     id: number,
     data: Uint8Array
   ) {
-    return this.pending_call.get(id)?.method_response(id, data);
+    return this.pending_call.get(id)?.method_response(this.name, id, data);
   }
 
   async broadcast(
@@ -252,9 +252,10 @@ export class ClientProxy {
     await this.sock.send(enc.dump());
   }
 
-  async method_response(id: number, data: Uint8Array) {
+  async method_response(name: string, id: number, data: Uint8Array) {
     const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Call);
+    enc.putInt(ClientSignature.Response);
+    enc.putString(name);
     enc.putInt(id);
     await this.sock.send(enc.dump(data));
   }
@@ -265,26 +266,25 @@ export class ClientProxy {
     enc.putString(key);
     await this.sock.send(enc.dump(data));
   }
-  async method_cancel(name: string, key: string, id: number) {
+  async method_cancel(name: string, id: number) {
     const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.CancelCall);
+    enc.putInt(ClientSignature.CancelRequest);
     enc.putString(name);
-    enc.putString(key);
     enc.putInt(id);
     await this.sock.send(enc.dump());
   }
   async subscribe_cancel(name: string, key: string) {
     const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.CancelBroadcast);
+    enc.putInt(ClientSignature.CancelSubscribe);
     enc.putString(name);
     enc.putString(key);
     await this.sock.send(enc.dump());
   }
-  async wait_notify(name: string, status: WaitResult) {
+  async wait_notify(name: string, status: boolean) {
     const enc = new MsgPackEncoder();
     enc.putInt(ClientSignature.Wait);
     enc.putString(name);
-    enc.putInt(status);
+    enc.putBool(status);
     await this.sock.send(enc.dump());
   }
 }
