@@ -1,176 +1,80 @@
 # ws-gateway
 WebSocket API gateway built using deno
 
-## Draft Spec
+[Protocol Draft](spec.md)
 
-Messages are encoded as MessagePack
+## Usage
 
-### Service side
+For service:
 
-#### Send
+``` typescript
+import { delay } from "https://deno.land/std/util/ts";
+import { MsgPackDecoder } from "https://deno.hertz.services/codehz/msgpack-deno";
+import Service from "https://deno.hertz.services/codehz/ws-gateway/sdk/service.ts";
 
-**Handshake packet**
+// register service
+const srv = new Service("demo", "0.0.1", {
+  // define methods
+  async echo(dec: MsgPackDecoder) {
+    return dec.getRest();
+  },
+  async delay(dec: MsgPackDecoder) {
+    const dur = dec.expectedInteger();
+    await delay(dur);
+  },
+  async exception(ex: MsgPackDecoder) {
+    throw new Error(ex.expectedString());
+  },
+  async broadcast(ex: MsgPackDecoder) {
+    await srv.broadcast(ex.expectedString(), () => ex.getRest());
+  }
+}, () => {
+  // default method handler
+  throw new Error("not implemented");
+});
 
-1. `str "WS-GATEWAY"` 
-2. `int 0` as protocol version
-3. `str (service name)` 
-4. `str (service type)` 
-5. `str (service version string)` 
+await srv.register("ws://127.0.0.1:8818", "demo", e => log.error("%#v", e));
+```
 
-**Response packet**
+For client:
 
-1. `int 0` as Response
-2. `int (request id)` as Request id
-3. data
+``` typescript
+import Client from "https://deno.hertz.services/codehz/ws-gateway/sdk/client.ts";
 
-**Exception packet**
-
-1. `int -1` as Exception
-2. `int (request id)` as Request id
-3. data
-
-**Broadcast packet**
-
-1. `int 1` as Broadcast
-2. `str key` as Broadcast key
-3. data
-
-#### Receive
-
-**Request packet**
-
-1. `int 0` as Request
-2. `str (key)` as method key
-3. `int (id)` as request id
-4. data
-
-**CancelRequest packet**
-
-(optional, can be ignored)
-
-1. `int 1` as CancelRequest
-2. `int (id)` as request id
-
-### Client side
-
-#### Send
-
-**Handshake packet**
-
-1. `str "WS-GATEWAY-CLIENT"` as magic
-2. `int 0` as protocol version
-
-**GetServiceList packet**
-
-1. `int 0` as GetServiceList
-
-*sync response*
-
-1. `int 0` as Sync
-2. `map<str (service name), array [str (type), str (version)]>` 
-
-**WaitService packet**
-
-1. `int 1` as WaitService
-2. `str (name)` as service name
-
-*sync response*
-
-1. `int 0` as Sync
-2. `bool (online status)` 
-
-*async response*
-
-1. `int 3` as Wait
-2. `str (name)` as target service name
-3. `bool (online status)` 
-
-**CancelWaitService packet**
-
-1. `int -1` as CancelWaitService
-2. `int (name)` as service name
-
-*sync response*
-
-1. `int 0` as Sync
-2. `bool (success)` 
-
-**CallService packet**
-
-1. `int 2` as CallService
-2. `str (name)` as service name
-3. `str (key)` as method key
-4. data
-
-*sync response*
-
-1. `int 0` as Sync
-2. `bool (success)` 
-3. `int (request id)` if success
-
-*async response 1: success*
-
-1. `int 1` as Response
-2. `str (service name)` 
-3. `int (request id)` 
-4. data
-
-*async response 2: cancel*
-
-1. `int 4` as CancelRequest
-2. `str (service name)` 
-3. `int (request id)` 
-
-*async response 3: exception*
-
-1. `int -1` as Exception
-2. `str (service name)` 
-3. `int (request id)` 
-4. data
-
-**CancelCallService packet**
-
-1. `int -2` as CancelCallService
-2. `str (name)` as service name
-3. `int (request id)` as request id
-
-*sync response*
-
-1. `int 0` as Sync
-2. `bool (success)` 
-
-**SubscribeService packet**
-
-1. `int 3` as SubscribeService
-2. `str (name)` as service name
-3. `str (key)` as event key
-
-*sync response*
-
-1. `int 0` as Sync
-2. `bool (success)` 
-
-*async response: success*
-
-1. `int 2` as Broadcast
-2. `str (name)` as service name
-3. `str (key)` as event key
-4. data
-
-*async response: cancel*
-
-1. `int 5` as CancelSubscribe
-2. `str (name)` as service name
-3. `str (key)` as event key
-
-**UnscribeService packet**
-
-1. `int -3` as UnsubscribeService
-2. `str (name)` as service name
-3. `str (key)` as event key
-
-*sync response*
-
-1. `int 0` as Sync
-2. `bool (success)` 
+const client = new Client();
+// connect to ws-gateway
+await client.connect("ws://127.0.0.1:8808", e => log.error("%#v", e));
+// get service proxy
+const srv = await client.get("demo");
+// wait service online (return immediately when online already)
+await srv.waitOnline();
+// subscribe event listener
+await srv.on("event", async data => {
+  log.info("received event: ", data.expectedString());
+});
+// call method
+await srv.call("delay", enc => {
+  // build parameters
+  enc.putInt(200);
+});
+// call method and wait result
+const res = await srv.call("echo", enc => {
+  enc.putString("test");
+});
+// parse result
+console.log("back: %s", res.expectedString());
+try {
+  await srv.call("exception", enc => {
+    enc.putString("expected exception");
+  });
+} catch(e) {
+  if (e instanceof MsgPackDecoder) {
+    console.log("expected exception from service: ", e);
+  }
+}
+// disconnect service
+await srv.disconnect();
+// disconnect client
+await client.disconnect();
+```
 
