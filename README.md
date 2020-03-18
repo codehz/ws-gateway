@@ -78,3 +78,6 @@ await srv.disconnect();
 await client.disconnect();
 ```
 
+## LICENSE
+
+GPL v3
