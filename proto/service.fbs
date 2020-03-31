@@ -1,0 +1,56 @@
+include "shared.fbs";
+
+namespace WsGw.proto.Service;
+
+table Handshake {
+  magic: string; // WS-GATEWAY
+  version: uint32;
+  name: string;
+  type: string;
+  srvver: string;
+}
+
+table HandshakeResponse {
+  magic: string; // WS-GATEWAY OK
+}
+
+namespace WsGw.proto.Service.Send;
+
+union Send { Response, Exception, Broadcast }
+
+table SendPacket {
+  packet: Send;
+}
+
+table Response {
+  id: uint32;
+  payload: [ubyte] (flexbuffer);
+}
+
+table Exception {
+  id: uint32;
+  info: ExceptionInfo;
+}
+
+table Broadcast {
+  key: string;
+  payload: [ubyte] (flexbuffer);
+}
+
+namespace WsGw.proto.Service.Receive;
+
+union Receive { Request, CancelRequest }
+
+table ReceivePacket {
+  packet: Receive;
+}
+
+table Request {
+  key: string;
+  id: uint32;
+  payload: [ubyte] (flexbuffer);
+}
+
+table CancelRequest {
+  id: uint32;
+}

@@ -1,0 +1,146 @@
+include "shared.fbs";
+
+namespace WsGw.proto.Client;
+
+table Handshake {
+  magic: string; // WS-GATEWAY-CLIENT
+  version: uint32;
+}
+
+table HandshakeResponse {
+  magic: string; // WS-GATEWAY-CLIENT OK
+}
+
+namespace WsGw.proto.Client.Send;
+
+union Send {
+  GetServiceList,
+  WaitService,
+  CancelWaitService,
+  CallService,
+  CancelCallService,
+  SubscribeService,
+  UnscribeService
+}
+
+table SendPacket {
+  send: Send;
+}
+
+table GetServiceList {}
+
+table WaitService {
+  name: string;
+}
+
+table CancelWaitService {
+  name: string;
+}
+
+table CallService {
+  name: string;
+  key: string;
+  payload: [ubyte];
+}
+
+table CancelCallService {
+  name: string;
+  id: int32;
+}
+
+table SubscribeService {
+  name: string;
+  key: string;
+}
+
+table UnscribeService {
+  name: string;
+  key: string;
+}
+
+namespace WsGw.proto.Client.Receive;
+
+union Receive { SyncResult, AsyncResult }
+
+table ReceivePacket {
+  receive: Receive;
+}
+
+enum OnlineStatus: ubyte { Offline, Online }
+
+namespace WsGw.proto.Client.Receive.Sync;
+
+union Sync {
+  SimpleResult,
+  ServiceList,
+  ServiceStatus,
+  RequestResult,
+}
+
+table SimpleResult { ok: bool; }
+
+table ServiceDesc {
+  name: string;
+  type: string;
+  version: string;
+}
+
+table ServiceList {
+  list: [ServiceDesc];
+}
+
+table ServiceStatus { status: OnlineStatus; }
+
+table RequestResult {
+  id: uint32;
+}
+
+table SyncResult { sync: Sync; }
+
+namespace WsGw.proto.Client.Receive.Async;
+
+union Async {
+  WaitResult,
+  CallResponse,
+  Event
+}
+
+table AsyncResult { async: Async; }
+
+table WaitResult {
+  name: string;
+  status: OnlineStatus;
+}
+
+namespace WsGw.proto.Client.Receive.Async.Call;
+
+union CallResponsePayload {
+  CallSuccess,
+  CallException
+}
+
+table CallResponse {
+  name: string;
+  id: uint32;
+  payload: CallResponsePayload;
+}
+
+table CallSuccess {
+  payload: [ubyte];
+}
+
+table CallException {
+  info: ExceptionInfo;
+}
+
+namespace WsGw.proto.Client.Receive.Async.Event;
+
+table EventPayload {
+  payload: [ubyte];
+}
+
+table Event {
+  name: string;
+  key: string;
+  payload: EventPayload;
+}

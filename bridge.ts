@@ -1,11 +1,11 @@
-import { ws, MsgPackEncoder, log } from "./deps.ts";
+import { ws, log } from "./deps.ts";
+import Proto from "./proto.ts";
 import MultiMap from "./multi_map.ts";
-import { ServiceSignature, ClientSignature, WaitResult } from "./constants.ts";
 
 enum LinkType {
   method,
   subscribe,
-  wait
+  wait,
 }
 
 type LinkData = {
@@ -30,32 +30,21 @@ const clients: Set<ClientProxy> = new Set();
 const client_trace: MultiMap<ClientProxy, LinkData> = new MultiMap();
 
 export class ServiceProxy {
-  private readonly name: string;
-  private readonly type: string;
-  private readonly version: string;
-  private readonly sock: ws.WebSocket;
-  private readonly pending_call: Map<number, ClientProxy>;
-  private readonly subscribers: MultiMap<string, ClientProxy>;
+  private readonly pending_call: Map<number, ClientProxy> = new Map();
+  private readonly subscribers: MultiMap<string, ClientProxy> = new MultiMap();
 
   private constructor(
-    name: string,
-    type: string,
-    version: string,
-    sock: ws.WebSocket
-  ) {
-    this.name = name;
-    this.type = type;
-    this.version = version;
-    this.sock = sock;
-    this.pending_call = new Map();
-    this.subscribers = new MultiMap();
-  }
+    public readonly name: string,
+    public readonly type: string,
+    public readonly version: string,
+    private readonly sock: ws.WebSocket,
+  ) {}
 
   static register(
     name: string,
     type: string,
     version: string,
-    sock: ws.WebSocket
+    sock: ws.WebSocket,
   ) {
     if (service_map.has(name)) throw new Error("name exists");
     log.info(
@@ -63,13 +52,11 @@ export class ServiceProxy {
       name,
       type,
       version,
-      sock.conn.remoteAddr
+      sock.conn.remoteAddr,
     );
     const ret = new ServiceProxy(name, type, version, sock);
     service_map.set(name, ret);
-    wait_map.get(name)?.forEach(client =>
-      client.wait_notify(name, WaitResult.Online)
-    );
+    wait_map.get(name)?.forEach((client) => client.wait_notify(name, true));
     return ret;
   }
 
@@ -86,7 +73,7 @@ export class ServiceProxy {
             client.subscribe_cancel(name, trace.key).catch(() => {});
             break;
           case LinkType.wait:
-            client.wait_notify(name, WaitResult.Offline).catch(() => {});
+            client.wait_notify(name, false).catch(() => {});
             break;
         }
       }
@@ -95,22 +82,32 @@ export class ServiceProxy {
     log.info(
       "unregister service %s from %#v",
       name,
-      this.sock.conn.remoteAddr
+      this.sock.conn.remoteAddr,
     );
   }
 
-  async method_call(
+  method_call(
     key: string,
     id: number,
     arg: Uint8Array,
-    client: ClientProxy
+    client: ClientProxy,
   ) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ServiceSignature.Request);
-    enc.putString(key);
-    enc.putInt(id);
+    const builder = new Proto.Builder(128);
+    builder.finish(Proto.Service.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Service.Receive.Receive.Request,
+      Proto.Service.Receive.Request.createRequest(
+        builder,
+        builder.createString(key),
+        id,
+        Proto.Service.Receive.Request.createPayloadVector(
+          builder,
+          arg,
+        ),
+      ),
+    ));
     this.pending_call.set(id, client);
-    await this.sock.send(enc.dump(arg));
+    return this.sock.send(builder.asUint8Array());
   }
 
   remove_from_pending_call(id: number, from: ClientProxy): boolean {
@@ -121,11 +118,18 @@ export class ServiceProxy {
     return false;
   }
 
-  async method_cancel(id: number) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ServiceSignature.CancelRequest);
-    enc.putInt(id);
-    await this.sock.send(enc.dump());
+  method_cancel(id: number) {
+    const builder = new Proto.Builder(128);
+    builder.finish(Proto.Service.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Service.Receive.Receive.CancelRequest,
+      Proto.Service.Receive.CancelRequest.createCancelRequest(
+        builder,
+        id,
+      ),
+    ));
+    this.pending_call.delete(id);
+    return this.sock.send(builder.asUint8Array());
   }
 
   generate_id(): number {
@@ -145,43 +149,37 @@ export class ServiceProxy {
     return this.subscribers.delete(key, client);
   }
 
-  async response(
+  response(
     id: number,
-    data: Uint8Array
+    data: Uint8Array,
   ) {
     const cli = this.pending_call.get(id);
     if (cli) {
       this.pending_call.delete(id);
-      await cli.method_response(this.name, id, data);
+      return cli.method_response(this.name, id, data);
     }
   }
 
-  async exception(
+  exception(
     id: number,
-    data: Uint8Array
+    msg: string,
   ) {
     const cli = this.pending_call.get(id);
     if (cli) {
       this.pending_call.delete(id);
-      await cli.method_exception(this.name, id, data);
+      return cli.method_exception(this.name, id, msg);
     }
   }
 
-  async broadcast(
+  broadcast(
     key: string,
-    data: Uint8Array
+    data: Uint8Array,
   ) {
     const subs = this.subscribers.get(key);
     if (subs == undefined) return;
     for (const client of subs) {
-      await client.subscribe_notify(this.name, key, data);
+      return client.subscribe_notify(this.name, key, data);
     }
-  }
-
-  dump(enc: MsgPackEncoder) {
-    enc.putArray(2);
-    enc.putString(this.type);
-    enc.putString(this.version);
   }
 }
 
@@ -199,7 +197,7 @@ export class ClientProxy {
   }
 
   unregister() {
-    client_trace.get(this)?.forEach(link => {
+    client_trace.get(this)?.forEach((link) => {
       const service = service_map.get(link.name);
       switch (link.type) {
         case LinkType.method:
@@ -220,30 +218,66 @@ export class ClientProxy {
     log.debug("client disconnected %#v", this.sock.conn.remoteAddr);
   }
 
-  async send_service_list() {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
-    enc.putMap(service_map.size);
-    for (const [name, service] of service_map) {
-      enc.putString(name);
-      service.dump(enc);
-    }
-    await this.sock.send(enc.dump());
+  send_service_list() {
+    const builder = new Proto.Builder(256);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.ServiceList,
+        Proto.Client.Receive.Sync.ServiceList.createServiceList(
+          builder,
+          Proto.Client.Receive.Sync.ServiceList.createListVector(
+            builder,
+            [...service_map.entries()].map(([name, service]) =>
+              Proto.Client.Receive.Sync.ServiceDesc.createServiceDesc(
+                builder,
+                builder.createString(name),
+                builder.createString(service.type),
+                builder.createString(service.version),
+              )
+            ),
+          ),
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
-  async add_wait_list(name: string) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
-    enc.putBool(service_map.has(name));
-    if (wait_map.add(name, this)) {
-      client_trace.add(this, { type: LinkType.wait, name });
-    }
-    await this.sock.send(enc.dump());
+  add_wait_list(name: string) {
+    const builder = new Proto.Builder(64);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.ServiceStatus,
+        Proto.Client.Receive.Sync.ServiceStatus.createServiceStatus(
+          builder,
+          service_map.has(name)
+            ? Proto.Client.Receive.OnlineStatus.Online
+            : Proto.Client.Receive.OnlineStatus.Offline,
+        ),
+      ),
+    ));
+    wait_map.add(name, this);
+    return this.sock.send(builder.asUint8Array());
   }
-  async remove_from_wait_list(name: string) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
+  remove_from_wait_list(name: string) {
+    const builder = new Proto.Builder(64);
     const result = wait_map.has(name, this);
-    enc.putBool(result);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.SimpleResult,
+        Proto.Client.Receive.Sync.SimpleResult.createSimpleResult(
+          builder,
+          result,
+        ),
+      ),
+    ));
     if (result) {
       wait_map.delete(name, this);
       const set = client_trace.get(this)!;
@@ -254,114 +288,278 @@ export class ClientProxy {
         }
       }
     }
-    await this.sock.send(enc.dump());
+    return this.sock.send(builder.asUint8Array());
   }
-  async request_method(
+  request_method(
     name: string,
     key: string,
-    arg: Uint8Array
+    arg: Uint8Array,
   ) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
+    const builder = new Proto.Builder(64);
     const service = service_map.get(name);
-    if (!service) {
-      enc.putBool(false);
-      await this.sock.send(enc.dump());
-      return;
+    if (service == null) {
+      builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+        builder,
+        Proto.Client.Receive.Receive.SyncResult,
+        Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+          builder,
+          Proto.Client.Receive.Sync.Sync.NONE,
+          0,
+        ),
+      ));
+      return this.sock.send(builder.asUint8Array());
     }
-    enc.putBool(true);
     const id = service.generate_id();
-    enc.putInt(id);
-    await this.sock.send(enc.dump());
-    await service.method_call(key, id, arg, this);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.RequestResult,
+        Proto.Client.Receive.Sync.RequestResult.createRequestResult(
+          builder,
+          id,
+        ),
+      ),
+    ));
+    return Promise.allSettled(
+      [
+        this.sock.send(builder.asUint8Array()),
+        service.method_call(key, id, arg, this),
+      ],
+    );
   }
-  async cancel_request(
+  cancel_request(
     name: string,
-    id: number
+    id: number,
   ) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
+    const builder = new Proto.Builder(64);
     const service = service_map.get(name);
-    if (!service) {
-      enc.putBool(false);
-      await this.sock.send(enc.dump());
-      return;
+    if (service == null) {
+      builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+        builder,
+        Proto.Client.Receive.Receive.SyncResult,
+        Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+          builder,
+          Proto.Client.Receive.Sync.Sync.NONE,
+          0,
+        ),
+      ));
+      return this.sock.send(builder.asUint8Array());
     }
-    enc.putBool(service.remove_from_pending_call(id, this));
-    try {
-      await this.sock.send(enc.dump());
-    } finally {
-      await service.method_cancel(id);
-    }
+    const result = service.remove_from_pending_call(id, this);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.SimpleResult,
+        Proto.Client.Receive.Sync.SimpleResult.createSimpleResult(
+          builder,
+          result,
+        ),
+      ),
+    ));
+    return Promise.allSettled(
+      [this.sock.send(builder.asUint8Array()), service.method_cancel(id)],
+    );
   }
-  async add_subscribe(name: string, key: string) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
+  add_subscribe(name: string, key: string) {
+    const builder = new Proto.Builder(64);
     const service = service_map.get(name);
-    if (!service) {
-      enc.putBool(false);
-      await this.sock.send(enc.dump());
-      return;
+    if (service == null) {
+      builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+        builder,
+        Proto.Client.Receive.Receive.SyncResult,
+        Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+          builder,
+          Proto.Client.Receive.Sync.Sync.NONE,
+          0,
+        ),
+      ));
+      return this.sock.send(builder.asUint8Array());
     }
-    enc.putBool(true);
-    if (service.subscribe_client(key, this)) {
+    const result = service.subscribe_client(key, this);
+    if (result) {
       client_trace.add(this, { type: LinkType.subscribe, name, key });
     }
-    await this.sock.send(enc.dump());
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.SimpleResult,
+        Proto.Client.Receive.Sync.SimpleResult.createSimpleResult(
+          builder,
+          result,
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
   async unsubscribe(name: string, key: string) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Sync);
+    const builder = new Proto.Builder(64);
     const service = service_map.get(name);
-    if (!service) {
-      enc.putBool(false);
-      await this.sock.send(enc.dump());
-      return;
+    if (service == null) {
+      builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+        builder,
+        Proto.Client.Receive.Receive.SyncResult,
+        Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+          builder,
+          Proto.Client.Receive.Sync.Sync.NONE,
+          0,
+        ),
+      ));
+      return this.sock.send(builder.asUint8Array());
     }
-    enc.putBool(service.unsubscribe_client(key, this));
-    await this.sock.send(enc.dump());
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.SyncResult,
+      Proto.Client.Receive.Sync.SyncResult.createSyncResult(
+        builder,
+        Proto.Client.Receive.Sync.Sync.SimpleResult,
+        Proto.Client.Receive.Sync.SimpleResult.createSimpleResult(
+          builder,
+          service.unsubscribe_client(key, this) && client_trace.deleteEquals(
+            this,
+            (el) =>
+              el.type === LinkType.subscribe && el.name === name &&
+                el.key === key,
+          ),
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
 
-  async method_response(name: string, id: number, data: Uint8Array) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Response);
-    enc.putString(name);
-    enc.putInt(id);
-    await this.sock.send(enc.dump(data));
+  method_response(name: string, id: number, data: Uint8Array) {
+    const builder = new Proto.Builder(64 + data.length);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.AsyncResult,
+      Proto.Client.Receive.Async.AsyncResult.createAsyncResult(
+        builder,
+        Proto.Client.Receive.Async.Async.CallResponse,
+        Proto.Client.Receive.Async.Call.CallResponse.createCallResponse(
+          builder,
+          builder.createString(name),
+          id,
+          Proto.Client.Receive.Async.Call.CallResponsePayload.CallSuccess,
+          Proto.Client.Receive.Async.Call.CallSuccess.createCallSuccess(
+            builder,
+            Proto.Client.Receive.Async.Call.CallSuccess.createPayloadVector(
+              builder,
+              data,
+            ),
+          ),
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
-  async method_exception(name: string, id: number, data: Uint8Array) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Exception);
-    enc.putString(name);
-    enc.putInt(id);
-    await this.sock.send(enc.dump(data));
+  async method_exception(name: string, id: number, msg: string) {
+    const builder = new Proto.Builder(128);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.AsyncResult,
+      Proto.Client.Receive.Async.AsyncResult.createAsyncResult(
+        builder,
+        Proto.Client.Receive.Async.Async.CallResponse,
+        Proto.Client.Receive.Async.Call.CallResponse.createCallResponse(
+          builder,
+          builder.createString(name),
+          id,
+          Proto.Client.Receive.Async.Call.CallResponsePayload.CallException,
+          Proto.Client.Receive.Async.Call.CallException.createCallException(
+            builder,
+            Proto.ExceptionInfo.createExceptionInfo(
+              builder,
+              builder.createString(msg),
+            ),
+          ),
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
-  async subscribe_notify(name: string, key: string, data: Uint8Array) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Broadcast);
-    enc.putString(name);
-    enc.putString(key);
-    await this.sock.send(enc.dump(data));
+  subscribe_notify(name: string, key: string, data: Uint8Array) {
+    const builder = new Proto.Builder(64 + data.length);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.AsyncResult,
+      Proto.Client.Receive.Async.AsyncResult.createAsyncResult(
+        builder,
+        Proto.Client.Receive.Async.Async.Event,
+        Proto.Client.Receive.Async.Event.Event.createEvent(
+          builder,
+          builder.createString(name),
+          builder.createString(key),
+          Proto.Client.Receive.Async.Event.EventPayload.createEventPayload(
+            builder,
+            Proto.Client.Receive.Async.Event.EventPayload.createPayloadVector(
+              builder,
+              data,
+            ),
+          ),
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
-  async method_cancel(name: string, id: number) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.CancelRequest);
-    enc.putString(name);
-    enc.putInt(id);
-    await this.sock.send(enc.dump());
+  method_cancel(name: string, id: number) {
+    const builder = new Proto.Builder(64);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.AsyncResult,
+      Proto.Client.Receive.Async.AsyncResult.createAsyncResult(
+        builder,
+        Proto.Client.Receive.Async.Async.CallResponse,
+        Proto.Client.Receive.Async.Call.CallResponse.createCallResponse(
+          builder,
+          builder.createString(name),
+          id,
+          Proto.Client.Receive.Async.Call.CallResponsePayload.NONE,
+          0,
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
-  async subscribe_cancel(name: string, key: string) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.CancelSubscribe);
-    enc.putString(name);
-    enc.putString(key);
-    await this.sock.send(enc.dump());
+  subscribe_cancel(name: string, key: string) {
+    const builder = new Proto.Builder(64);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.AsyncResult,
+      Proto.Client.Receive.Async.AsyncResult.createAsyncResult(
+        builder,
+        Proto.Client.Receive.Async.Async.Event,
+        Proto.Client.Receive.Async.Event.Event.createEvent(
+          builder,
+          builder.createString(name),
+          builder.createString(key),
+          0,
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
-  async wait_notify(name: string, status: boolean) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ClientSignature.Wait);
-    enc.putString(name);
-    enc.putBool(status);
-    await this.sock.send(enc.dump());
+  wait_notify(name: string, status: boolean) {
+    const builder = new Proto.Builder(64);
+    builder.finish(Proto.Client.Receive.ReceivePacket.createReceivePacket(
+      builder,
+      Proto.Client.Receive.Receive.AsyncResult,
+      Proto.Client.Receive.Async.AsyncResult.createAsyncResult(
+        builder,
+        Proto.Client.Receive.Async.Async.WaitResult,
+        Proto.Client.Receive.Async.WaitResult.createWaitResult(
+          builder,
+          builder.createString(name),
+          status
+            ? Proto.Client.Receive.OnlineStatus.Online
+            : Proto.Client.Receive.OnlineStatus.Offline,
+        ),
+      ),
+    ));
+    return this.sock.send(builder.asUint8Array());
   }
 }

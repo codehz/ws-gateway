@@ -1,4 +1,5 @@
-import { ws, MsgPackEncoder, MsgPackDecoder, log } from "../deps.ts";
+import { ws, log } from "../deps.ts";
+import Proto from "../proto.ts";
 import {
   SERVICE_MAGIC,
   SERVICE_VERSION,
@@ -6,19 +7,21 @@ import {
   ServiceSignature,
   ServiceActionType
 } from "../constants.ts";
-import { ParameterBuilder } from "./shared.ts";
 
 function buildHandshake(name: string, type: string, version: string) {
-  const enc = new MsgPackEncoder();
-  enc.putString(SERVICE_MAGIC);
-  enc.putInt(SERVICE_VERSION);
-  enc.putString(name);
-  enc.putString(type);
-  enc.putString(version);
-  return enc.dump();
+  const builder = new Proto.Builder(64);
+  builder.finish(Proto.Service.Handshake.createHandshake(
+    builder,
+    builder.createString(SERVICE_MAGIC),
+    SERVICE_VERSION,
+    builder.createString(name),
+    builder.createString(type),
+    builder.createString(version),
+  ));
+  return builder.asUint8Array();
 }
 
-export type MethodHandler = (dec: MsgPackDecoder) => Promise<
+export type MethodHandler = (dec: Uint8Array) => Promise<
   Uint8Array | void
 >;
 
@@ -33,7 +36,7 @@ export default class Service {
     type: string,
     version: string,
     handlers: Record<string, MethodHandler>,
-    defaultHandler: MethodHandler
+    defaultHandler: MethodHandler,
   ) {
     this.type = type;
     this.version = version;
@@ -41,37 +44,64 @@ export default class Service {
     this.defaultHandler = defaultHandler;
   }
 
-  async broadcast(key: string, builder: ParameterBuilder) {
-    const enc = new MsgPackEncoder();
-    enc.putInt(ServiceActionType.Broadcast);
-    enc.putString(key);
-    await this.connection.send(enc.dump(builder(enc) as any));
+  async broadcast(key: string, data: Uint8Array) {
+    const builder = new Proto.Builder(64 + data.length);
+    builder.finish(Proto.Service.Send.SendPacket.createSendPacket(
+      builder,
+      Proto.Service.Send.Send.Broadcast,
+      Proto.Service.Send.Broadcast.createBroadcast(
+        builder,
+        builder.createString(key),
+        Proto.Service.Send.Broadcast.createPayloadVector(builder, data),
+      ),
+    ));
+    await this.connection.send(builder.asUint8Array());
   }
 
   private async handlePacket(
-    frame: MsgPackDecoder,
-    async_exception_handler: (e: any) => void
+    frame: Proto.Service.Receive.ReceivePacket,
+    async_exception_handler: (e: any) => void,
   ) {
-    switch (frame.expectedInteger()) {
-      case ServiceSignature.Request: {
-        const key = frame.expectedString();
-        const id = frame.expectedInteger();
+    switch (frame.packetType()) {
+      case Proto.Service.Receive.Receive.Request: {
+        const req = frame.packet(new Proto.Service.Receive.Request())!;
+        const key = req.key()!;
+        const id = req.id()!;
         const handler = this.handlers.get(key) ?? this.defaultHandler;
-        handler(frame).then(async out => {
-          const enc = new MsgPackEncoder();
-          enc.putInt(ServiceActionType.Response);
-          enc.putInt(id);
-          await this.connection.send(enc.dump(out as any));
+        handler(req.payloadArray()!).then(async (out) => {
+          const builder = new Proto.Builder(64 + (out ? out.length : 0));
+          builder.finish(Proto.Service.Send.SendPacket.createSendPacket(
+            builder,
+            Proto.Service.Send.Send.Response,
+            Proto.Service.Send.Response.createResponse(
+              builder,
+              id,
+              Proto.Service.Send.Response.createPayloadVector(
+                builder,
+                out ? out : [],
+              ),
+            ),
+          ));
+          return this.connection.send(builder.asUint8Array());
         }).catch(async (e: any) => {
-          const enc = new MsgPackEncoder();
-          enc.putInt(ServiceActionType.Exception);
-          enc.putInt(id);
-          enc.putString(e + "");
-          await this.connection.send(enc.dump());
+          const builder = new Proto.Builder(128);
+          builder.finish(Proto.Service.Send.SendPacket.createSendPacket(
+            builder,
+            Proto.Service.Send.Send.Exception,
+            Proto.Service.Send.Exception.createException(
+              builder,
+              id,
+              Proto.ExceptionInfo.createExceptionInfo(
+                builder,
+                builder.createString(e + ""),
+              ),
+            ),
+          ));
+          return this.connection.send(builder.asUint8Array());
         });
         break;
       }
-      case ServiceSignature.CancelRequest:
+      case Proto.Service.Receive.Receive.CancelRequest:
         // TODO: waiting for https://github.com/denoland/deno/issues/3345
         break;
       default:
@@ -81,7 +111,7 @@ export default class Service {
 
   private async loop(
     stream: AsyncIterableIterator<ws.WebSocketEvent>,
-    async_exception_handler: (e: any) => void
+    async_exception_handler: (e: any) => void,
   ) {
     try {
       for await (const pkt of stream) {
@@ -93,8 +123,10 @@ export default class Service {
         }
         if (pkt instanceof Uint8Array) {
           await this.handlePacket(
-            new MsgPackDecoder(pkt),
-            async_exception_handler
+            Proto.Service.Receive.ReceivePacket.getRootAsReceivePacket(
+              new Proto.ByteBuffer(pkt),
+            ),
+            async_exception_handler,
           );
         } else {
           async_exception_handler(pkt);
@@ -108,7 +140,7 @@ export default class Service {
   async register(
     endpoint: string,
     name: string,
-    async_exception_handler: (e: any) => void
+    async_exception_handler: (e: any) => void,
   ) {
     if (this.isConnected) {
       throw new Error("illegal state");
@@ -120,7 +152,9 @@ export default class Service {
     const { value: handshake_response } = await stream.next();
     if (
       !(handshake_response instanceof Uint8Array) ||
-      new MsgPackDecoder(handshake_response).expectedString() !==
+      Proto.Service.HandshakeResponse.getRootAsHandshakeResponse(
+        new Proto.ByteBuffer(handshake_response),
+      ).magic() !==
         HANDSHAKE_RESPONSE
     ) {
       throw new Error(`failed to handshake_response: ${handshake_response}`);

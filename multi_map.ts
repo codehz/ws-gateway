@@ -37,6 +37,21 @@ export default class MultiMap<Key, Value> {
     }
   }
 
+  deleteEquals(
+    key: Key,
+    equals: (el: Value) => boolean,
+  ): boolean {
+    const temp = this.data.get(key);
+    if (!temp) return false;
+    for (const el of temp) {
+      if (equals(el)) {
+        temp.delete(el);
+        return true;
+      }
+    }
+    return false;
+  }
+
   keys() {
     return this.data.keys();
   }

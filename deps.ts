@@ -1,4 +1,4 @@
-export * from "https://deno.hertz.services/codehz/msgpack-deno";
+// export * from "https://deno.hertz.services/codehz/msgpack-deno";
 export * as ws from "https://deno.land/std/ws/mod.ts";
 export * as http from "https://deno.land/std/http/mod.ts";
 export * as log from "https://deno.land/std/log/mod.ts";

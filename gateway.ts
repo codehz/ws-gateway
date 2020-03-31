@@ -1,4 +1,5 @@
-import { http, ws, MsgPackDecoder, MsgPackEncoder, log } from "./deps.ts";
+import { http, ws, log } from "./deps.ts";
+import Proto from "./proto.ts";
 import { ClientProxy } from "./bridge.ts";
 import {
   GATEWAY_MAGIC,
@@ -8,66 +9,72 @@ import {
 } from "./constants.ts";
 
 const RESP = (() => {
-  const enc = new MsgPackEncoder();
-  enc.putString(HANDSHAKE_RESPONSE);
-  return enc.dump();
+  const builder = new Proto.Builder(32);
+  builder.finish(Proto.Service.HandshakeResponse.createHandshakeResponse(
+    builder,
+    builder.createString(HANDSHAKE_RESPONSE),
+  ));
+  return builder.asUint8Array();
 })();
 
 async function* handleSession(
   sock: ws.WebSocket,
-  reg: (() => void)[]
+  reg: (() => void)[],
 ): AsyncGenerator<
   undefined,
   void,
-  MsgPackDecoder
+  Proto.ByteBuffer
 > {
-  const handshake = yield;
-  if (handshake.expectedString() != GATEWAY_MAGIC) {
+  const handshake = Proto.Client.Handshake.getRootAsHandshake(yield);
+  if (handshake.magic() != GATEWAY_MAGIC) {
     throw new Error("Invalid magic");
   }
-  if (handshake.expectedInteger() != GATEWAY_VERSION) {
+  if (handshake.version() != GATEWAY_VERSION) {
     throw new Error("Invalid version");
   }
   const client = ClientProxy.register(sock);
   reg.push(() => client.unregister());
   await sock.send(RESP);
   while (true) {
-    const frame = yield;
-    switch (frame.expectedInteger() as ActionType) {
-      case ActionType.GetServiceList:
+    const frame = Proto.Client.Send.SendPacket.getRootAsSendPacket(yield);
+    switch (frame.sendType()) {
+      case Proto.Client.Send.Send.GetServiceList:
         await client.send_service_list();
         break;
-      case ActionType.WaitService:
-        await client.add_wait_list(frame.expectedString());
+      case Proto.Client.Send.Send.WaitService: {
+        const obj = frame.send(new Proto.Client.Send.WaitService())!;
+        await client.add_wait_list(obj.name()!);
         break;
-      case ActionType.CancelWaitService:
-        await client.remove_from_wait_list(frame.expectedString());
+      }
+      case Proto.Client.Send.Send.CancelWaitService: {
+        const obj = frame.send(new Proto.Client.Send.CancelWaitService())!;
+        await client.remove_from_wait_list(obj.name()!);
         break;
-      case ActionType.CallService:
+      }
+      case Proto.Client.Send.Send.CallService: {
+        const obj = frame.send(new Proto.Client.Send.CallService())!;
         await client.request_method(
-          frame.expectedString(),
-          frame.expectedString(),
-          frame.getRest()
+          obj.name()!,
+          obj.key()!,
+          obj.payloadArray()!,
         );
         break;
-      case ActionType.CancelCallService:
-        await client.cancel_request(
-          frame.expectedString(),
-          frame.expectedInteger()
-        );
+      }
+      case Proto.Client.Send.Send.CancelCallService: {
+        const obj = frame.send(new Proto.Client.Send.CancelCallService())!;
+        await client.cancel_request(obj.name()!, obj.id()!);
         break;
-      case ActionType.SubscribeService:
-        await client.add_subscribe(
-          frame.expectedString(),
-          frame.expectedString()
-        );
+      }
+      case Proto.Client.Send.Send.SubscribeService: {
+        const obj = frame.send(new Proto.Client.Send.SubscribeService())!;
+        await client.add_subscribe(obj.name()!, obj.key()!);
         break;
-      case ActionType.UnsubscribeService:
-        await client.unsubscribe(
-          frame.expectedString(),
-          frame.expectedString()
-        );
+      }
+      case Proto.Client.Send.Send.UnscribeService: {
+        const obj = frame.send(new Proto.Client.Send.UnscribeService())!;
+        await client.unsubscribe(obj.name()!, obj.key()!);
         break;
+      }
       default:
         await sock.send("Not implemented");
     }
@@ -85,7 +92,7 @@ async function handleWebsocket(sock: ws.WebSocket) {
       }
       if (ws.isWebSocketCloseEvent(packet)) break;
       if (packet instanceof Uint8Array) {
-        const { done, value } = await hand.next(new MsgPackDecoder(packet));
+        const { done, value } = await hand.next(new Proto.ByteBuffer(packet));
         if (done) break;
         if (value != undefined) {
           reg.push(value);
@@ -105,17 +112,17 @@ async function handleWebsocket(sock: ws.WebSocket) {
     if (!sock.isClosed) {
       sock.close();
     }
-    reg.forEach(x => x());
+    reg.forEach((x) => x());
   }
 }
 
-export default async function(address: string) {
+export default async function (address: string) {
   for await (const req of http.serve(address)) {
     ws.acceptWebSocket({
       conn: req.conn,
       headers: req.headers,
       bufReader: req.r,
-      bufWriter: req.w
+      bufWriter: req.w,
     }).then(handleWebsocket).catch(() => {});
   }
 }
