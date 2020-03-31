@@ -35,8 +35,8 @@ async function* handleSession(
   const name = handshake.name()!;
   const type = handshake.type()!;
   const version = handshake.srvver()!;
-  const service = ServiceProxy.register(name, type, version, sock);
   reg.push(() => service.unregister());
+  const service = ServiceProxy.register(name, type, version, sock);
   await sock.send(RESP);
   while (true) {
     const frame = Proto.Service.Send.SendPacket.getRootAsSendPacket(yield);

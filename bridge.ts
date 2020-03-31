@@ -56,7 +56,9 @@ export class ServiceProxy {
     );
     const ret = new ServiceProxy(name, type, version, sock);
     service_map.set(name, ret);
-    wait_map.get(name)?.forEach((client) => client.wait_notify(name, true));
+    wait_map.get(name)?.forEach((client) =>
+      client.wait_notify(name, true).catch(() => {})
+    );
     return ret;
   }
 
@@ -261,6 +263,7 @@ export class ClientProxy {
       ),
     ));
     wait_map.add(name, this);
+    client_trace.add(this, { type: LinkType.wait, name: name });
     return this.sock.send(builder.asUint8Array());
   }
   remove_from_wait_list(name: string) {
@@ -280,13 +283,10 @@ export class ClientProxy {
     ));
     if (result) {
       wait_map.delete(name, this);
-      const set = client_trace.get(this)!;
-      for (const item of set) {
-        if (item.type === LinkType.wait && item.name === name) {
-          set.delete(item);
-          break;
-        }
-      }
+      client_trace.deleteEquals(
+        this,
+        (item) => item.type === LinkType.wait && item.name === name,
+      );
     }
     return this.sock.send(builder.asUint8Array());
   }
@@ -322,6 +322,7 @@ export class ClientProxy {
         ),
       ),
     ));
+    client_trace.add(this, { type: LinkType.method, name, key, id });
     return Promise.allSettled(
       [
         this.sock.send(builder.asUint8Array()),
@@ -360,6 +361,11 @@ export class ClientProxy {
         ),
       ),
     ));
+    client_trace.deleteEquals(
+      this,
+      (item) =>
+        item.type === LinkType.method && item.name === name && item.id === id,
+    );
     return Promise.allSettled(
       [this.sock.send(builder.asUint8Array()), service.method_cancel(id)],
     );
